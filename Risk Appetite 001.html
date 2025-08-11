@@ -1,0 +1,533 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trading Persoonlijkheidsquiz</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDK's -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot, collection, query, getDocs } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // Globale variabelen van de Canvas-omgeving
+        const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : 'null');
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        // Quizgegevens uit de MPCvragen.csv
+        const quizData = [
+            {
+                question: "1. Stel er wordt een nieuwe strategie voorgesteld met statistische data die beter zijn dan de huidige strategieën, maar je hebt een intuïtief wantrouwen. Wat stel je voor?",
+                answers: [
+                    { text: "Ik wil direct starten, maar breng de leverage naar beneden zodat het het risico & rendementprofiel vergelijkbaar is met de andere strategieën", scores: { "R/R": 1, "E/R": 1, "D/F": 1 } },
+                    { text: "Je wil eerst een grondig onderzoek doen, dat best 6 maanden kan duren, totdat je alle ins en outs weet", scores: { "R/R": -4, "E/R": 5, "D/F": 4 } },
+                    { text: "Je wilt eerst een paar specifieke vragen over het risico beantwoord hebben, maar wel binnen 2 weken starten. Learning on the job.", scores: { "R/R": -2, "E/R": 2, "D/F": -2 } }
+                ]
+            },
+            {
+                question: "2. Vertrouw je meer op een strategie die je niet helemaal begrijpt, maar een goede backtest laat zien óf op een strategie waarvan je het model snapt, ook al presteert die minder, maar wel boven het minimaal vereiste rendement?",
+                answers: [
+                    { text: "Je wil eerst een grondig onderzoek doen, dat best 6 maanden kan duren, totdat je alle ins en outs weet", scores: { "R/R": -4, "E/R": 5, "D/F": 4 } },
+                    { text: "Je wilt eerst een paar specifieke vragen over het risico beantwoord hebben, maar wel binnen 2 weken starten. Learning on the job.", scores: { "R/R": -2, "E/R": 2, "D/F": -2 } },
+                    { text: "Ik vertrouw op de strategie met de beste prestaties, de afrekening komt later wel.", scores: { "R/R": 5, "E/R": -4, "D/F": -2 } }
+                ]
+            },
+            {
+                question: "3. Welke strategie kies je, en waarom? Strategie A (20% rendement, 15% drawdown) vs. Strategie B (30% rendement, 30% drawdown)?",
+                answers: [
+                    { text: "Ik kies strategie B, het gaat om het maximale rendement op lange termijn. Drawdown is niet belangrijk.", scores: { "R/R": 5, "E/R": -4, "D/F": -2 } },
+                    { text: "Ik kies strategie B, want een grote drawdown is te verdragen als het rendement maar hoog genoeg is.", scores: { "R/R": 5, "E/R": -4, "D/F": -2 } },
+                    { text: "Ik kies strategie A. Drawdowns zijn mentaal het zwaarst en de risico’s zijn hierin lager. Rendement is niet het belangrijkste aspect.", scores: { "R/R": -4, "E/R": -4, "D/F": -3 } },
+                    { text: "Ik kies strategie A, want een drawdown van 30% voelt als een te groot risico. Ik accepteer liever minder rendement.", scores: { "R/R": -4, "E/R": 5, "D/F": -3 } }
+                ]
+            },
+            {
+                question: "4. Bij welke drawdown-maatstaf voel je je het meest ongemakkelijk?",
+                answers: [
+                    { text: "Bij een hoge maximale drawdown (bijv. 30%). Dat is een verlies dat je nooit meer terugverdient, denk ik.", scores: { "R/R": -4, "E/R": -4, "D/F": -3 } },
+                    { text: "Bij een hoge frequentie van drawdowns. Dat voelt als constant verlies.", scores: { "R/R": -5, "E/R": -4, "D/F": -3 } },
+                    { text: "De emotie van een drawdown is niet afhankelijk van de grootte of frequentie, maar van de totale impact op je vermogen. Ik kan goed verlies accepteren zolang ik maar een doel voor ogen heb.", scores: { "R/R": 2, "E/R": 5, "D/F": 3 } }
+                ]
+            },
+            {
+                question: "5. In welk scenario ben je het meest bereid om een strategie uit de portefeuille te halen?",
+                answers: [
+                    { text: "Wanneer de strategie over een periode van 3 maanden een aanzienlijk verlies van 20% heeft geleden.", scores: { "R/R": -5, "E/R": -5, "D/F": -5 } },
+                    { text: "Wanneer de strategie de doelstellingen niet behaalt. Na 1 jaar is de strategie niet winstgevend geweest.", scores: { "R/R": 2, "E/R": 2, "D/F": -2 } },
+                    { text: "Wanneer de strategie een serie van 5 opeenvolgende verliesgevende maanden heeft gehad.", scores: { "R/R": -4, "E/R": 5, "D/F": 3 } }
+                ]
+            },
+            {
+                question: "6. Hoe reageer je op een significante, onverwachte daling in een beleggingsstrategie?",
+                answers: [
+                    { text: "Ik raak in paniek en verkoop direct mijn positie om verdere verliezen te beperken.", scores: { "R/R": -4, "E/R": -5, "D/F": -3 } },
+                    { text: "Ik blijf kalm, analyseer de oorzaken en houd me aan mijn oorspronkelijke plan.", scores: { "R/R": 5, "E/R": 5, "D/F": 4 } },
+                    { text: "Ik raak onzeker en overweeg mijn positie te verkopen, maar stel een deadline vast om de situatie te evalueren.", scores: { "R/R": -2, "E/R": 2, "D/F": 1 } }
+                ]
+            },
+            {
+                question: "7. Wat is het belangrijkste criterium voor jou om een beleggingsstrategie te evalueren?",
+                answers: [
+                    { text: "Het behaalde rendement in verhouding tot het genomen risico (bijv. Sharpe ratio).", scores: { "R/R": 5, "E/R": 5, "D/F": 4 } },
+                    { text: "De consistentie van de resultaten over een langere periode.", scores: { "R/R": 4, "E/R": 4, "D/F": 5 } },
+                    { text: "Het maximale verlies dat ik zou kunnen lijden (Maximum Drawdown).", scores: { "R/R": -4, "E/R": -4, "D/F": -3 } }
+                ]
+            },
+            {
+                question: "8. Hoe ga je om met een lange 'flat' periode (geen winst of verlies) van een strategie?",
+                answers: [
+                    { text: "Ik verlies mijn geduld en ga op zoek naar een nieuwe strategie met sneller rendement.", scores: { "R/R": 1, "E/R": -4, "D/F": -4 } },
+                    { text: "Ik analyseer de strategie opnieuw, maar blijf geduldig en geef de strategie tijd om te herstellen.", scores: { "R/R": 2, "E/R": 3, "D/F": 5 } },
+                    { text: "Ik beschouw het als een teken dat de strategie niet werkt en beëindig mijn positie.", scores: { "R/R": -3, "E/R": 2, "D/F": -3 } }
+                ]
+            },
+            {
+                question: "9. Wat is jouw reactie op een kleine reeks van verliezen, die niet significant zijn, maar wel opeenvolgend?",
+                answers: [
+                    { text: "Ik word gefrustreerd en begin te twijfelen aan de strategie.", scores: { "R/R": -3, "E/R": -5, "D/F": -4 } },
+                    { text: "Ik accepteer het als een normaal onderdeel van de strategie en blijf mijn plan volgen.", scores: { "R/R": 5, "E/R": 5, "D/F": 5 } },
+                    { text: "Ik verklein mijn positie en wacht tot de strategie weer winstgevend wordt.", scores: { "R/R": -2, "E/R": 2, "D/F": -2 } }
+                ]
+            },
+            {
+                question: "10. Hoe belangrijk is het voor jou om de logica achter een strategie volledig te begrijpen?",
+                answers: [
+                    { text: "Absoluut essentieel. Ik moet elk detail begrijpen om erin te kunnen beleggen.", scores: { "R/R": -5, "E/R": 5, "D/F": 4 } },
+                    { text: "Niet zo belangrijk. De resultaten spreken voor zich.", scores: { "R/R": 5, "E/R": -4, "D/F": -2 } },
+                    { text: "Redelijk belangrijk. Ik moet de basisprincipes snappen, maar vertrouw op de expertise van anderen.", scores: { "R/R": 1, "E/R": 2, "D/F": 2 } }
+                ]
+            },
+            {
+                question: "11. Wat doe je als een strategie niet presteert zoals verwacht na een jaar, terwijl de markt wel goed presteert?",
+                answers: [
+                    { text: "Ik stop direct met de strategie en zoek naar iets nieuws.", scores: { "R/R": -4, "E/R": -5, "D/F": -5 } },
+                    { text: "Ik analyseer of de strategie nog steeds in lijn is met mijn risicoprofiel en beleggingsdoelen.", scores: { "R/R": 5, "E/R": 5, "D/F": 5 } },
+                    { text: "Ik geef de strategie nog een half jaar, hopend op herstel.", scores: { "R/R": 2, "E/R": 2, "D/F": -2 } }
+                ]
+            },
+            {
+                question: "12. Wat is jouw houding ten opzichte van het accepteren van verlies?",
+                answers: [
+                    { text: "Verlies accepteren is moeilijk. Ik hoop altijd dat een positie herstelt.", scores: { "R/R": -5, "E/R": -5, "D/F": -4 } },
+                    { text: "Ik accepteer verlies als een normaal onderdeel van de markt en focus op de lange termijn.", scores: { "R/R": 5, "E/R": 5, "D/F": 5 } },
+                    { text: "Ik accepteer verlies, maar alleen als de strategie-eigenaar het kan rechtvaardigen.", scores: { "R/R": -2, "E/R": 2, "D/F": -2 } }
+                ]
+            },
+            {
+                question: "13. In een onzekere markt, hoe pas je je beleggingsstrategie aan?",
+                answers: [
+                    { text: "Ik breng het risico omlaag door de leverage te verlagen of de positiegrootte te verkleinen.", scores: { "R/R": -4, "E/R": 5, "D/F": -2 } },
+                    { text: "Ik blijf mijn oorspronkelijke strategie volgen, ongeacht de marktomstandigheden.", scores: { "R/R": 2, "E/R": -4, "D/F": 5 } },
+                    { text: "Ik stop met beleggen tot de markt weer stabiel is.", scores: { "R/R": -5, "E/R": -5, "D/F": -5 } }
+                ]
+            },
+            {
+                question: "14. Wat is jouw reactie als je ontdekt dat een strategie die je volgt een hogere drawdown heeft gehad dan je vooraf wist?",
+                answers: [
+                    { text: "Ik verkoop de positie direct en overweeg de strategie in de toekomst niet meer.", scores: { "R/R": -5, "E/R": -5, "D/F": -5 } },
+                    { text: "Ik neem contact op met de strategie-eigenaar voor een grondige uitleg.", scores: { "R/R": 2, "E/R": 5, "D/F": 4 } },
+                    { text: "Ik bekijk of de lange termijn prestaties nog steeds binnen mijn verwachtingen passen en blijf rustig.", scores: { "R/R": 4, "E/R": 4, "D/F": 3 } }
+                ]
+            },
+            {
+                question: "15. Hoe belangrijk is het voor jou om een duidelijke 'stop loss'-strategie te hebben?",
+                answers: [
+                    { text: "Cruciaal, het geeft mij de zekerheid dat ik niet meer verlies dan ik kan veroorloven.", scores: { "R/R": -4, "E/R": -4, "D/F": 5 } },
+                    { text: "Niet zo belangrijk, ik vertrouw op de lange termijn resultaten en de strategie van de eigenaar.", scores: { "R/R": 5, "E/R": 5, "D/F": -4 } },
+                    { text: "Belangrijk, maar ik sta open voor aanpassingen als de marktomstandigheden dat vereisen.", scores: { "R/R": 2, "E/R": 2, "D/F": 2 } }
+                ]
+            },
+            {
+                question: "16. Als een strategie een verlies heeft van 20%, wat is dan de vereiste winst om het kapitaal weer op het oorspronkelijke niveau te krijgen?",
+                answers: [
+                    { text: "20%", scores: { "R/R": -4, "E/R": -4, "D/F": 2 } },
+                    { text: "25%", scores: { "R/R": 5, "E/R": 5, "D/F": 4 } },
+                    { text: "22%", scores: { "R/R": -2, "E/R": 2, "D/F": 1 } }
+                ]
+            },
+            {
+                question: "17. Welke emotie domineert je wanneer je een onverwachte grote winst hebt behaald?",
+                answers: [
+                    { text: "Euforie en de neiging om meer risico te nemen voor nog grotere winsten.", scores: { "R/R": 5, "E/R": -5, "D/F": -5 } },
+                    { text: "Tevredenheid en een rationele evaluatie van de prestatie.", scores: { "R/R": -2, "E/R": 5, "D/F": 5 } },
+                    { text: "Angst dat de winst weer verdwijnt en de neiging om de positie direct te verkopen.", scores: { "R/R": -5, "E/R": -4, "D/F": -3 } }
+                ]
+            },
+            {
+                question: "18. Welke verlies is mentaal het zwaarst: een groot, plotseling verlies (zoals een flash crash) of een constante reeks van kleine verliezen die zich opstapelen?",
+                answers: [
+                    { text: "Een plotseling verlies is veruit het zwaarst; ik kan slecht tegen onverwachte schokken.", scores: { "R/R": -4, "E/R": -5, "D/F": -3 } },
+                    { text: "De constante reeks van kleine verliezen is zwaarder, omdat het voelt als een structureel verlies.", scores: { "R/R": -4, "E/R": -5, "D/F": -3 } },
+                    { text: "Beide zijn even zwaar. Ik focus op het totale verlies en het effect daarvan op mijn portfolio.", scores: { "R/R": 2, "E/R": 5, "D/F": 3 } }
+                ]
+            },
+            {
+                question: "19. Wanneer stop je met een strategie die een 'flat' periode van twee jaar heeft zonder rendement?",
+                answers: [
+                    { text: "Ik wacht de komende periode af, maar als de daling aanhoudt, trek ik mijn kapitaal terug. Ik verwacht wel een proactieve reactie van de strategie eigenaar binnen een dag.", scores: { "R/R": -3, "E/R": -2, "D/F": -3 } },
+                    { text: "De constante reeks van kleine verliezen is zwaarder, omdat het voelt als een structureel verlies.", scores: { "R/R": -4, "E/R": -5, "D/F": -3 } },
+                    { text: "Beide zijn even zwaar. Ik focus op het totale verlies en het effect daarvan op mijn portfolio.", scores: { "R/R": 2, "E/R": 5, "D/F": 3 } }
+                ]
+            },
+            {
+                question: "20. Kun je jarenlang verliezen verdragen op basis van enkel een theoretisch voordeel uit een backtest?",
+                answers: [
+                    { text: "Ik verlies mijn geduld en ga op zoek naar een nieuwe strategie met sneller rendement.", scores: { "R/R": 1, "E/R": -4, "D/F": -4 } },
+                    { text: "Ja, ik vertrouw op de wiskunde en de statistiek en houd me aan de strategie.", scores: { "R/R": 5, "E/R": 5, "D/F": 4 } },
+                    { text: "Nee, de psychologische impact is te groot. Ik moet concrete resultaten zien.", scores: { "R/R": -4, "E/R": -5, "D/F": -3 } }
+                ]
+            },
+            {
+                question: "21. Hoe definieer je een onsuccesvolle strategie?",
+                answers: [
+                    { text: "Als de maximale drawdown te hoog is, ongeacht het rendement.", scores: { "R/R": -4, "E/R": -4, "D/F": -3 } },
+                    { text: "Als de strategie onderpresteert ten opzichte van mijn benchmark, ook al maakt het winst.", scores: { "R/R": 4, "E/R": 5, "D/F": -2 } },
+                    { text: "Als het rendement op de lange termijn onder mijn verwachtingen ligt.", scores: { "R/R": 5, "E/R": 5, "D/F": 4 } }
+                ]
+            }
+        ];
+
+        // Tailwind styling
+        const tailwindClasses = `
+            @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+            body { font-family: 'Inter', sans-serif; background-color: #f3f4f6; }
+            .progress-bar-container { height: 8px; background-color: #e5e7eb; border-radius: 9999px; overflow: hidden; }
+            .progress-bar { height: 100%; background-color: #4f46e5; transition: width 0.3s ease-out; border-radius: 9999px; }
+            .answer-button.selected { background-color: #93c5fd; }
+        `;
+
+        // State van de applicatie
+        const state = {
+            page: 'start', // 'start', 'quiz', 'results', 'overview'
+            userInfo: { name: '', email: '', userId: '' },
+            currentQuestionIndex: 0,
+            answers: [],
+            totalScores: { "R/R": 0, "E/R": 0, "D/F": 0 },
+            resultsList: [],
+            isAuthReady: false,
+        };
+
+        let app, db, auth;
+        let userId = 'anon-user';
+
+        // Initialiseer Firebase en Firestore
+        function initFirebase() {
+            if (firebaseConfig && !app) {
+                try {
+                    app = initializeApp(firebaseConfig);
+                    db = getFirestore(app);
+                    auth = getAuth(app);
+                    onAuthStateChanged(auth, async (user) => {
+                        if (user) {
+                            userId = user.uid;
+                        } else {
+                            await signInAnonymously(auth);
+                            userId = auth.currentUser.uid;
+                        }
+                        state.isAuthReady = true;
+                        console.log("Firebase Auth ready. User ID:", userId);
+                        render();
+                    });
+                } catch (error) {
+                    console.error("Fout bij het initialiseren van Firebase:", error);
+                    // Toon een foutmelding aan de gebruiker
+                    document.getElementById('app').innerHTML = `
+                        <div class="p-8 text-center text-red-500">
+                            Fout: Kan geen verbinding maken met de database. Controleer de configuratie.
+                        </div>
+                    `;
+                }
+            } else {
+                state.isAuthReady = true;
+                // Anonieme gebruiker als Firebase niet is geconfigureerd
+                console.log("Firebase niet geconfigureerd. Gebruikt een anonieme gebruiker.");
+                render();
+            }
+        }
+        
+        // Laad alle resultaten van andere gebruikers
+        function loadAllResults() {
+            if (!db || !state.isAuthReady) {
+                console.error("Database is niet klaar.");
+                return;
+            }
+            try {
+                const resultsCollection = collection(db, `artifacts/${appId}/public/data/quizResults`);
+                const q = query(resultsCollection);
+
+                onSnapshot(q, (snapshot) => {
+                    const loadedResults = [];
+                    snapshot.forEach(doc => {
+                        loadedResults.push({ id: doc.id, ...doc.data() });
+                    });
+                    state.resultsList = loadedResults;
+                    render();
+                });
+            } catch (error) {
+                console.error("Fout bij het laden van de resultaten:", error);
+                document.getElementById('app').innerHTML = `
+                    <div class="p-8 text-center text-red-500">
+                        Fout bij het laden van de resultaten. Probeer het later opnieuw.
+                    </div>
+                `;
+            }
+        }
+
+        // Sla het resultaat van de gebruiker op in de database
+        async function saveUserResult(scores, name, email) {
+            if (!db || !state.isAuthReady) {
+                console.error("Database is niet klaar. Resultaat niet opgeslagen.");
+                return;
+            }
+            try {
+                const resultsCollection = collection(db, `artifacts/${appId}/public/data/quizResults`);
+                const docRef = doc(resultsCollection);
+                await setDoc(docRef, {
+                    userId: userId,
+                    name: name,
+                    email: email,
+                    scores: scores,
+                    timestamp: new Date().toISOString()
+                });
+                console.log("Resultaten succesvol opgeslagen.");
+            } catch (error) {
+                console.error("Fout bij het opslaan van de resultaten:", error);
+            }
+        }
+
+        // Functies voor paginanavigatie
+        function startQuiz(event) {
+            event.preventDefault();
+            const name = document.getElementById('name').value;
+            const email = document.getElementById('email').value;
+            state.userInfo.name = name;
+            state.userInfo.email = email;
+            state.currentQuestionIndex = 0;
+            state.answers = [];
+            state.totalScores = { "R/R": 0, "E/R": 0, "D/F": 0 };
+            state.page = 'quiz';
+            render();
+        }
+
+        function nextQuestion() {
+            const selectedIndex = document.querySelector('input[name="answer"]:checked').value;
+            const selectedAnswer = quizData[state.currentQuestionIndex].answers[selectedIndex];
+            state.answers.push(selectedAnswer);
+
+            // Scores optellen
+            for (const key in selectedAnswer.scores) {
+                state.totalScores[key] += selectedAnswer.scores[key];
+            }
+
+            if (state.currentQuestionIndex < quizData.length - 1) {
+                state.currentQuestionIndex++;
+                state.page = 'quiz';
+            } else {
+                state.page = 'results';
+                saveUserResult(state.totalScores, state.userInfo.name, state.userInfo.email);
+            }
+            render();
+        }
+
+        function showResultsOverview() {
+            state.page = 'overview';
+            loadAllResults();
+            render();
+        }
+
+        function restartQuiz() {
+            state.page = 'start';
+            state.userInfo = { name: '', email: '', userId: '' };
+            state.currentQuestionIndex = 0;
+            state.answers = [];
+            state.totalScores = { "R/R": 0, "E/R": 0, "D/F": 0 };
+            render();
+        }
+
+        // Functie om de HTML-inhoud te renderen op basis van de state
+        function render() {
+            if (!state.isAuthReady) {
+                // Toon een laadscherm terwijl Firebase wordt geïnitialiseerd
+                document.getElementById('app').innerHTML = `
+                    <div class="flex items-center justify-center min-h-screen p-4">
+                        <div class="w-full max-w-lg bg-white rounded-xl shadow-lg p-8 text-center">
+                            <h1 class="text-3xl font-bold text-indigo-700">Laden...</h1>
+                            <p class="text-gray-600 mt-4">Bezig met initialiseren van de applicatie.</p>
+                        </div>
+                    </div>
+                `;
+                return;
+            }
+
+            const appDiv = document.getElementById('app');
+            let content = '';
+
+            switch (state.page) {
+                case 'start':
+                    content = `
+                        <div class="flex items-center justify-center min-h-screen p-4">
+                            <div class="w-full max-w-lg bg-white rounded-xl shadow-lg p-8">
+                                <h1 class="text-3xl font-bold text-center mb-6 text-indigo-700">Trading Persoonlijkheidsquiz</h1>
+                                <p class="text-center text-gray-600 mb-8">Ontdek je handelspersoonlijkheid in ${quizData.length} vragen!</p>
+                                <form id="start-form" class="space-y-4">
+                                    <div>
+                                        <label for="name" class="block text-sm font-medium text-gray-700">Naam</label>
+                                        <input type="text" id="name" name="name" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                    </div>
+                                    <div>
+                                        <label for="email" class="block text-sm font-medium text-gray-700">E-mail</label>
+                                        <input type="email" id="email" name="email" required class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
+                                    </div>
+                                    <button type="submit" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                                        Start de quiz
+                                    </button>
+                                </form>
+                                <div class="text-center mt-4">
+                                    <button id="overview-btn" class="text-indigo-600 hover:underline">Bekijk resultaten van anderen</button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    break;
+
+                case 'quiz':
+                    const currentQuestion = quizData[state.currentQuestionIndex];
+                    const progressPercentage = ((state.currentQuestionIndex + 1) / quizData.length) * 100;
+                    content = `
+                        <div class="flex items-center justify-center min-h-screen p-4">
+                            <div class="w-full max-w-lg bg-white rounded-xl shadow-lg p-8">
+                                <div class="progress-bar-container mb-6">
+                                    <div class="progress-bar" style="width: ${progressPercentage}%"></div>
+                                </div>
+                                <p class="text-sm text-gray-500 text-center mb-4">Vraag ${state.currentQuestionIndex + 1} van de ${quizData.length}</p>
+                                <h2 class="text-xl font-semibold mb-6 text-gray-800">${currentQuestion.question}</h2>
+                                <form id="quiz-form" class="space-y-4">
+                                    ${currentQuestion.answers.map((answer, index) => `
+                                        <label class="block cursor-pointer">
+                                            <input type="radio" name="answer" value="${index}" class="hidden peer">
+                                            <div class="answer-button bg-gray-100 p-4 rounded-lg hover:bg-blue-100 transition duration-200 peer-checked:bg-blue-300">
+                                                <p class="text-gray-700">${answer.text}</p>
+                                            </div>
+                                        </label>
+                                    `).join('')}
+                                    <button type="submit" id="next-button" disabled class="w-full py-2 px-4 rounded-lg shadow-md font-semibold text-white bg-indigo-600 opacity-50 cursor-not-allowed hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                                        Volgende vraag
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    `;
+                    break;
+                
+                case 'results':
+                    content = `
+                        <div class="flex items-center justify-center min-h-screen p-4">
+                            <div class="w-full max-w-lg bg-white rounded-xl shadow-lg p-8">
+                                <h1 class="text-3xl font-bold text-center mb-4 text-indigo-700">Jouw Trading Persoonlijkheid</h1>
+                                <p class="text-center text-gray-600 mb-8">Hallo, ${state.userInfo.name}! Dit zijn je resultaten op basis van je antwoorden.</p>
+                                <p class="text-center text-sm text-gray-400 mb-4">Jouw gebruikers-ID: ${userId}</p>
+
+                                <div class="space-y-4 mb-8">
+                                    <ul class="space-y-2">
+                                        ${Object.entries(state.totalScores).map(([key, value]) => `
+                                            <li class="flex justify-between items-center text-lg font-medium text-gray-700 p-2 bg-gray-50 rounded-md">
+                                                <span>${key}:</span>
+                                                <span class="font-bold text-indigo-600">${value}</span>
+                                            </li>
+                                        `).join('')}
+                                    </ul>
+                                </div>
+
+                                <div class="text-center">
+                                    <button onclick="restartQuiz()" class="inline-block px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                                        Nog een keer doen
+                                    </button>
+                                    <button onclick="showResultsOverview()" class="inline-block px-6 py-3 bg-gray-300 text-gray-800 font-semibold rounded-lg shadow-md ml-4 hover:bg-gray-400 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500">
+                                        Bekijk alle resultaten
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    break;
+                
+                case 'overview':
+                    content = `
+                        <div class="flex items-start justify-center min-h-screen p-4">
+                            <div class="w-full max-w-2xl bg-white rounded-xl shadow-lg p-8 mt-10">
+                                <h1 class="text-3xl font-bold text-center mb-6 text-indigo-700">Overzicht Quizresultaten</h1>
+                                <div id="results-container">
+                                    ${state.resultsList.length > 0 ? state.resultsList.map(result => `
+                                        <div class="bg-gray-100 p-4 rounded-lg shadow-sm mb-4">
+                                            <p class="font-bold text-lg text-gray-800">${result.name}</p>
+                                            <p class="text-sm text-gray-500 mb-2">ID: ${result.userId}</p>
+                                            <div class="grid grid-cols-3 gap-2 mt-2 text-center">
+                                                <div class="bg-blue-100 rounded-md p-2">
+                                                    <p class="font-medium text-blue-700">R/R</p>
+                                                    <p class="text-gray-700">${result.scores['R/R']}</p>
+                                                </div>
+                                                <div class="bg-blue-100 rounded-md p-2">
+                                                    <p class="font-medium text-blue-700">E/R</p>
+                                                    <p class="text-gray-700">${result.scores['E/R']}</p>
+                                                </div>
+                                                <div class="bg-blue-100 rounded-md p-2">
+                                                    <p class="font-medium text-blue-700">D/F</p>
+                                                    <p class="text-gray-700">${result.scores['D/F']}</p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    `).join('') : '<div class="text-center text-gray-500">Resultaten laden of nog geen resultaten gevonden.</div>'}
+                                </div>
+                                <div class="flex justify-center mt-8">
+                                    <button onclick="restartQuiz()" class="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500">
+                                        Terug naar start
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    break;
+            }
+
+            appDiv.innerHTML = content;
+
+            // Voeg event listeners toe na het renderen
+            if (state.page === 'start') {
+                document.getElementById('start-form').addEventListener('submit', startQuiz);
+                document.getElementById('overview-btn').addEventListener('click', showResultsOverview);
+            } else if (state.page === 'quiz') {
+                const quizForm = document.getElementById('quiz-form');
+                const nextButton = document.getElementById('next-button');
+                const answerButtons = quizForm.querySelectorAll('input[name="answer"]');
+                answerButtons.forEach(button => {
+                    button.addEventListener('change', () => {
+                        nextButton.disabled = false;
+                        nextButton.classList.remove('opacity-50', 'cursor-not-allowed');
+                    });
+                });
+                quizForm.addEventListener('submit', (event) => {
+                    event.preventDefault();
+                    if (!nextButton.disabled) {
+                        nextQuestion();
+                    }
+                });
+            }
+        }
+
+        // Start de applicatie
+        window.onload = function() {
+            const style = document.createElement('style');
+            style.innerHTML = tailwindClasses;
+            document.head.appendChild(style);
+            initFirebase();
+            render();
+        };
+
+    </script>
+</head>
+<body>
+    <div id="app"></div>
+</body>
+</html>
